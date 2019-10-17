@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 #
 #-------------------------------------------------------------------------------
 #
@@ -40,6 +41,11 @@ CMD_CLOSE = b'CLSE'
 
 ADBP_VERSION = 0x01000000
 ADBP_MAX_DATA = 4096
+
+
+#replace sum in py3
+def _sum(s):
+    return sum([ord(i) for i in s])
 
 
 class ADBError(Exception):
@@ -91,8 +97,8 @@ class _ADBSocket(object):
     def send_msg(self, cmd, arg0, arg1, data):
         '''Send an ADB message.'''
         header = HEADER_STRUCT.pack(cmd, arg0, arg1,
-                                    len(data), sum(data) & 0xffffffff,
-                                    bytes(c ^ 0xff for c in cmd))
+                                    len(data), _sum(data) & 0xffffffff,
+                                    ''.join([chr(ord(c) ^ 0xff) for c in cmd]))
         with self._send_lock:
             self._send_buffer.extend(header)
             self._send_buffer.extend(data)
@@ -135,7 +141,7 @@ class _ADBSocket(object):
                             self._recv_buffer.extend(received)
 
                         (cmd, arg0, arg1, length, checksum, magic) = self._pending_recv_msg
-                        if any(a ^ b != 0xff for a, b in zip(cmd, magic)):
+                        if any(ord(a) ^ ord(b) != 0xff for a, b in zip(cmd, magic)):
                             raise ADBError('Invalid magic received.')
 
                         if len(self._recv_buffer) < length:
@@ -145,7 +151,7 @@ class _ADBSocket(object):
                             received = self._recv_buffer[length:]
                             self._pending_recv_msg = None
 
-                            if sum(data) != checksum:
+                            if _sum(data) != checksum:
                                 raise ADBError('Invalid checksum.')
                             self._recv_msg_queue.put((cmd, arg0, arg1, data))
 
@@ -291,25 +297,14 @@ class ADBConnection(object):
 
         with self._service_closed_condition:
             while self._services:
-                self._service_closed_condition.wait()
+                t = self._service_closed_condition.wait(timeout=5)
+                #fix a bug
+                if not t:
+                    break
 
 #{{{ Services ------------------------------------------------------------------
 
-def simple_service(callback):
-    '''A service which simply reads and reply all data using a function.
-
-    :param callback: A function object taking a "bytes" object, being the data
-                     just being read from the device, another "bytes" object as
-                     reply. Both "bytes" object may be None, indicating the lack
-                     of data.
-    '''
-
-    received = None
-    while True:
-        received = yield callback(received)
-
-
-def simple_text_service(callback, encoding='utf-8'):
+def simple_text_service(ip,port,encoding='utf-8'):
     '''A service which simply reads and reply all text, using a function.
 
     Example of printing the content of logcat::
@@ -330,78 +325,19 @@ def simple_text_service(callback, encoding='utf-8'):
     while True:
         if received is not None:
             received = received.decode(encoding)
-        reply = callback(received)
+            print ip+':'+str(port)+'\n'+received
+        reply = received
         if reply is not None:
             reply = reply.encode(encoding)
         received = yield reply
 
 #}}}
 
-#{{{ Service names -------------------------------------------------------------
 
-def logcat_name(filters=None, format=None, clear=False, binary=False):
-    '''The name of a LogCat service.
-
-    The *filters* should be an iterable of pairs of the form
-    ``[('tag1', 'v'), ('tag2', 'e'), ...]``. The first element is the log
-    component tag, and the second element is the priority. The tag can be
-    ``'*'``.
-
-    +----------+-----------------------------+
-    | Priority | Definition                  |
-    +==========+=============================+
-    | 'v'      | Verbose                     |
-    +----------+-----------------------------+
-    | 'd'      | Debug                       |
-    +----------+-----------------------------+
-    | 'i'      | Info                        |
-    +----------+-----------------------------+
-    | 'w'      | Warn                        |
-    +----------+-----------------------------+
-    | 'e'      | Error                       |
-    +----------+-----------------------------+
-    | 'f'      | Fatal                       |
-    +----------+-----------------------------+
-    | 's'      | Silent (supress all output) |
-    +----------+-----------------------------+
-
-    The *format* can be one of:
-
-    * brief
-    * process
-    * tag
-    * thread
-    * raw
-    * time
-    * threadtime
-    * long
-
-    :param filters: The tag filters.
-    :param format: The output format.
-    :param clear: If true, clear the logcat history and exit immediately.
-    :param binary: If true, output the data in binary format.
-    '''
-
-    args = []
-    if clear:
-        args.append('-c')
-    if binary:
-        args.append('-B')
-    if format:
-        args.extend(['-v', format])
-    if filters:
-        args.append(',')
-        for tag, priority in filters:
-            args.append(shlex.quote(tag) + ':' + priority)
-
-    return 'shell:export ANDROID_LOG_TAGS="";exec logcat ' + ' '.join(args)
-
-
-#}}}
 
 if __name__ == '__main__':
-    with ADBConnection('192.168.56.101') as conn:
-        conn.register('shell:export ANDROID_LOG_TAGS="";exec logcat',
-                      simple_text_service(lambda b: print(b, end='')))
+    with ADBConnection('127.0.0.1',5555) as conn:
+        conn.register('shell:whoami',
+            simple_text_service('127.0.0.1',5555))
         conn.wait()
 
